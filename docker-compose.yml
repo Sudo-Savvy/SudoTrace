@@ -1,0 +1,48 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: sudotrace-backend
+    restart: unless-stopped
+    networks:
+      - sudotrace-net
+    volumes:
+      - sudotrace_data:/data
+    environment:
+      - DATABASE_URL=/data/sudotrace.db
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: sudotrace-frontend
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:443:443"
+    networks:
+      - sudotrace-net
+    volumes:
+      - sudotrace_certs:/certs
+    depends_on:
+      - backend
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
+
+networks:
+  sudotrace-net:
+    driver: bridge
+
+volumes:
+  sudotrace_data:
+    name: sudotrace_data
+  sudotrace_certs:
+    name: sudotrace_certs

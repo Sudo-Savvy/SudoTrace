@@ -1,0 +1,41 @@
+# Python
+backend/venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Database and credentials
+*.db
+*.sqlite
+*.sqlite3
+.env
+.env.*
+!.env.example
+
+# TLS certs (auto-generated in Docker volume)
+certs/
+*.crt
+*.key
+*.pem
+
+# Docker volumes (local dev only)
+data/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Scope doc — kept locally only, never published.
+*.docx
+SudoTrace-Full-Scope-*.txt
