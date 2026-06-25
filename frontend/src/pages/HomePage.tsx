@@ -48,6 +48,15 @@ import { fmtDateTime } from '../utils/dateFormat'
 import DegradationBanner from '../components/DegradationBanner'
 import { setDegraded, clearDegraded, clearAllDegraded, friendlyError } from '../store/degradationStore'
 import { exportInvestigationToFile, importInvestigationFromFile } from '../utils/investigationFile'
+import { parseBecCaseFile, exportBecCaseToFile } from '../utils/becCaseFile'
+import BecView from '../components/BecView'
+import { getBecCase, deleteBecCase, putBecCase } from '../api/bec'
+
+// BEC case identity held at the page level. Identifies the account, an optional
+// suspected origin IP, and the sign-in window. The analyst-authored state
+// (selections, checklist) auto-saves from BecView; on reload we restore it via
+// `becRestore` (see the mount effect below).
+interface BecCase { account: string; ip: string; timeWindow: string; offline?: boolean }
 
 const TIME_WINDOWS = [
   { value: '±30m',   label: '±30 minutes' },
@@ -1395,7 +1404,7 @@ function IncidentsView({ hostname, cached, onLoaded, incidentFlags, onIncidentFl
 }
 
 // ── App Bar (merged nav + device strip) ──────────────────────────────────
-function AppBar({ user, investigation, procCount = 0, onLogout, onSettings, onHome, onTimeWindowChange, onFocalPidClick, onChangePid, onLoadInvestigation }: {
+function AppBar({ user, investigation, procCount = 0, onLogout, onSettings, onHome, onTimeWindowChange, onFocalPidClick, onChangePid, onLoadInvestigation, becActive, onSaveBec, onLoadBec }: {
   user: User
   investigation: Investigation | null
   procCount?: number
@@ -1411,6 +1420,11 @@ function AppBar({ user, investigation, procCount = 0, onLogout, onSettings, onHo
   // Fired by the load-from-file flow with the persisted investigation
   // metadata (or null if the file carried only authored state).
   onLoadInvestigation: ((inv: Investigation | null) => void) | null
+  // BEC mode: when a case is open, Save/Load operate on the BEC case file
+  // instead of the endpoint investigation.
+  becActive: boolean
+  onSaveBec: () => void
+  onLoadBec: (c: import('../api/bec').BecCaseState) => void
 }) {
   const iocList = useIocList()
   const [confirmNew, setConfirmNew] = useState(false)
@@ -1425,6 +1439,18 @@ function AppBar({ user, investigation, procCount = 0, onLogout, onSettings, onHo
     const file = e.target.files?.[0]
     e.target.value = ''  // reset so picking the same file twice still fires onChange
     if (!file) return
+    // First: is it a BEC case file? If so, route it to the BEC loader.
+    const bec = await parseBecCaseFile(file)
+    if (bec.ok) {
+      if ((becActive || !!investigation) && !window.confirm(
+        'Load this BEC case? It will replace the current case / investigation.'
+      )) return
+      onLoadBec(bec.case)
+      setLoadMsg('✓ BEC case loaded')
+      setTimeout(() => setLoadMsg(null), 4000)
+      return
+    }
+    // Otherwise treat it as an endpoint investigation file.
     // Warn before clobbering current work. Anything an analyst has built up
     // (IOCs / flags / notes / overrides / history) is about to be replaced
     // wholesale by the file contents.
@@ -1590,8 +1616,10 @@ function AppBar({ user, investigation, procCount = 0, onLogout, onSettings, onHo
           Reuses the same snapshot shape as the auto-save endpoint, so an
           exported file can be re-imported into a fresh session. */}
       <button
-        onClick={() => exportInvestigationToFile(investigation)}
-        title="Download the current investigation (IOCs, flags, notes, overrides, AI history) as a JSON file"
+        onClick={() => becActive ? onSaveBec() : exportInvestigationToFile(investigation)}
+        title={becActive
+          ? 'Download the current BEC case (account, selections, checklist, notes, captured IPs) as a JSON file'
+          : 'Download the current investigation (IOCs, flags, notes, overrides, AI history) as a JSON file'}
         onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)'; e.currentTarget.style.background = 'rgba(168,85,247,0.15)' }}
         onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.background = 'transparent' }}
         style={{
@@ -3391,7 +3419,39 @@ function InvestigationShell({ inv, deviceInfo, onReset, onPivot, onHostnameResol
 }
 
 // ── Welcome Screen ───────────────────────────────────────────────────────
-function WelcomeScreen({ onStart }: { onStart: (inv: Investigation) => void }) {
+function WelcomeScreen({ onStart, onStartBec }: {
+  onStart: (inv: Investigation) => void
+  onStartBec: (account: string, ip: string, timeWindow: string, offline: boolean) => void
+}) {
+  // Investigation type (§1): endpoint trace vs account-compromise (BEC).
+  const [invType, setInvType] = useState<'endpoint' | 'bec'>('endpoint')
+  // BEC form state.
+  const [becAccount, setBecAccount] = useState('')
+  const [becIp, setBecIp] = useState('')
+  const [becWindow, setBecWindow] = useState('last24h')
+  // Live (Graph API) vs offline (manual / copy-paste hunting) mode.
+  const [becGraph, setBecGraph] = useState(true)
+  // Custom absolute range (ISO-8601 UTC strings) when becWindow === 'custom',
+  // chosen via the shared RangePicker calendar.
+  const [becCustomStart, setBecCustomStart] = useState('')
+  const [becCustomEnd, setBecCustomEnd] = useState('')
+  const [becRangeOpen, setBecRangeOpen] = useState(false)
+
+  // Resolve the lookback the case opens with: a preset, or a custom:<iso>..<iso>
+  // range the backend's parse_time_window understands.
+  function becEffectiveWindow(): string {
+    if (becWindow !== 'custom') return becWindow
+    if (becCustomStart && becCustomEnd) {
+      const s = new Date(becCustomStart), e = new Date(becCustomEnd)
+      if (!isNaN(s.getTime()) && !isNaN(e.getTime()) && s < e) {
+        return `custom:${becCustomStart}..${becCustomEnd}`
+      }
+    }
+    return 'last7d'
+  }
+  const becCustomInvalid = becWindow === 'custom' && (
+    !becCustomStart || !becCustomEnd || new Date(becCustomStart) >= new Date(becCustomEnd)
+  )
   // Two flows here: the analyst can search by hostname OR by device ID
   // ('auto' infers from the shape of the input). Looking up first lets
   // us disambiguate when one hostname maps to multiple devices (common
@@ -3581,6 +3641,113 @@ function WelcomeScreen({ onStart }: { onStart: (inv: Investigation) => void }) {
           </div>
         </div>
 
+        {/* Investigation type selector (§1) */}
+        <div style={{ display: 'flex', gap: 8, marginBottom: 18 }}>
+          {([['endpoint', 'Endpoint trace', 'Device + PID'], ['bec', 'Account compromise', 'BEC / identity']] as const).map(([t, title, sub]) => {
+            const on = invType === t
+            return (
+              <button type="button" key={t} onClick={() => setInvType(t)}
+                style={{
+                  flex: 1, textAlign: 'left', cursor: 'pointer',
+                  background: on ? 'rgba(168,85,247,0.12)' : 'var(--bg-card)',
+                  border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`,
+                  borderRadius: 6, padding: '10px 12px', fontFamily: 'var(--font-mono)',
+                }}>
+                <div style={{ color: on ? 'var(--accent)' : 'var(--text)', fontSize: 12, fontWeight: 600 }}>{title}</div>
+                <div style={{ color: 'var(--text-muted)', fontSize: 9.5, marginTop: 2 }}>{sub}</div>
+              </button>
+            )
+          })}
+        </div>
+
+        {invType === 'bec' && (
+          <form
+            onSubmit={e => { e.preventDefault(); if (becAccount.trim() && !becCustomInvalid) onStartBec(becAccount.trim(), becIp.trim(), becEffectiveWindow(), !becGraph) }}
+            style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <div>
+              <label style={labelStyle}>Account (UPN or object id)</label>
+              <input style={inputStyle} autoFocus placeholder="user@domain.com"
+                value={becAccount} onChange={e => setBecAccount(e.target.value)} />
+            </div>
+            <div>
+              <label style={labelStyle}>Suspected origin IP <span style={{ textTransform: 'none', letterSpacing: 0 }}>(optional)</span></label>
+              <input style={inputStyle} placeholder="45.135.x.x"
+                value={becIp} onChange={e => setBecIp(e.target.value)} />
+            </div>
+            <div>
+              <label style={labelStyle}>Sign-in lookback</label>
+              <select style={inputStyle} value={becWindow} onChange={e => setBecWindow(e.target.value)}>
+                <option value="last24h">Last 24 hours</option>
+                <option value="last7d">Last 7 days</option>
+                <option value="last30d">Last 30 days</option>
+                <option value="custom">Custom range…</option>
+              </select>
+              {becWindow === 'custom' && (
+                <button type="button" onClick={() => setBecRangeOpen(true)}
+                  style={{
+                    ...inputStyle, marginTop: 8, textAlign: 'left', cursor: 'pointer',
+                    color: becCustomStart && becCustomEnd ? 'var(--text)' : 'var(--text-muted)',
+                  }}>
+                  {becCustomStart && becCustomEnd
+                    ? `${formatCustomWindow(`custom:${becCustomStart}..${becCustomEnd}`)}`
+                    : 'Select date range…'}
+                </button>
+              )}
+              {becWindow === 'custom' && becCustomInvalid && (
+                <div style={{ color: 'var(--amber)', fontSize: 9.5, marginTop: 4 }}>
+                  Pick a start and end on the calendar. Sign-in logs retain ~30 days.
+                </div>
+              )}
+              {becRangeOpen && createPortal(
+                <>
+                  <div onClick={() => setBecRangeOpen(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 10000 }} />
+                  <div style={{ position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', zIndex: 10001 }}>
+                    <RangePicker
+                      initialStart={becCustomStart || undefined}
+                      initialEnd={becCustomEnd || undefined}
+                      onApply={(s, e) => { setBecCustomStart(s); setBecCustomEnd(e); setBecRangeOpen(false) }}
+                      onCancel={() => setBecRangeOpen(false)}
+                    />
+                  </div>
+                </>,
+                document.body,
+              )}
+            </div>
+            <div>
+              <label style={labelStyle}>Data mode</label>
+              <div style={{ display: 'flex', gap: 6 }}>
+                {([['live', 'Live (Graph API)'], ['offline', 'Offline (manual)']] as const).map(([k, lbl]) => {
+                  const on = (k === 'live') === becGraph
+                  return (
+                    <button key={k} type="button" onClick={() => setBecGraph(k === 'live')}
+                      style={{
+                        flex: 1, background: on ? 'rgba(168,85,247,0.15)' : 'var(--bg-elevated)',
+                        border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`,
+                        color: on ? 'var(--accent)' : 'var(--text-muted)', cursor: 'pointer',
+                        fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 600, padding: '7px', borderRadius: 4,
+                      }}>{lbl}</button>
+                  )
+                })}
+              </div>
+            </div>
+            <button type="submit" disabled={!becAccount.trim() || becCustomInvalid}
+              style={{
+                background: becAccount.trim() && !becCustomInvalid ? 'var(--accent)' : 'var(--bg-elevated)',
+                color: becAccount.trim() && !becCustomInvalid ? '#fff' : 'var(--text-muted)', border: 'none', borderRadius: 4,
+                cursor: becAccount.trim() && !becCustomInvalid ? 'pointer' : 'default', fontFamily: 'var(--font-mono)',
+                fontSize: 12, fontWeight: 600, padding: '10px', letterSpacing: 0.3,
+              }}>
+              Open case ▸
+            </button>
+            <div style={{ color: 'var(--text-muted)', fontSize: 10, lineHeight: 1.5 }}>
+              {becGraph
+                ? <>Opens the investigation checklist and, when Graph is reachable, pulls Entra sign-ins, scope hunts and enrichment (needs AuditLog.Read.All + Entra ID P1/P2).</>
+                : <><span style={{ color: 'var(--amber)' }}>Offline mode</span> — no Graph calls. You get the checklist plus copy-paste hunting queries (Advanced Hunting / audit log) to run by hand.</>}
+            </div>
+          </form>
+        )}
+
+        {invType === 'endpoint' && (
         <form onSubmit={handleStart} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <div>
             <label style={labelStyle}>Device</label>
@@ -3796,6 +3963,7 @@ function WelcomeScreen({ onStart }: { onStart: (inv: Investigation) => void }) {
             INVESTIGATE ▸
           </button>
         </form>
+        )}
       </div>
       <ConfirmDialog
         open={!!pendingWide}
@@ -3812,6 +3980,16 @@ export default function HomePage({ user, onLogout, investigation, onInvestigatio
   const navigate = useNavigate()
   const [credsMissing, setCredsMissing] = useState(false)
   const [deviceInfo, setDeviceInfo] = useState<DeviceInfoData | null>(null)
+  // BEC case (account-compromise flow). `becRestore` carries the saved
+  // analyst-authored state into BecView on resume; null for a fresh case.
+  const [becCase, setBecCase] = useState<BecCase | null>(null)
+  const [becRestore, setBecRestore] = useState<{
+    selected: string[]; checked: string[]; notes: Record<string, string>
+    timeline_custom?: import('../api/bec').BecTimelineCustom[]; timeline_hidden?: string[]; manual_ips?: string[]
+  } | null>(null)
+  // Bumped when a BEC case is loaded from file so BecView remounts and re-seeds
+  // its internal state from the new `restore` snapshot.
+  const [becLoadNonce, setBecLoadNonce] = useState(0)
   // Cross-component callback: AppBar's PID click → AnalysisTab's handlePidClick.
   // AnalysisTab updates this ref so the AppBar (a sibling in the tree) can
   // trigger a reveal without lifting all of AnalysisTab's state up here.
@@ -3821,6 +3999,27 @@ export default function HomePage({ user, onLogout, investigation, onInvestigatio
 
   useEffect(() => {
     getCredentialStatus().then(({ configured }) => setCredsMissing(!configured))
+  }, [])
+
+  // On first mount, resume a saved BEC case if one exists and nothing else is
+  // already open (an active endpoint investigation takes precedence). Runs once.
+  useEffect(() => {
+    let cancelled = false
+    getBecCase().then(({ case: saved }) => {
+      // An active endpoint investigation (mount-time value) takes precedence.
+      if (cancelled || !saved || investigation) return
+      setBecRestore({
+        selected: saved.selected ?? [],
+        checked:  saved.checked ?? [],
+        notes:    saved.notes ?? {},
+        timeline_custom: saved.timeline_custom ?? [],
+        timeline_hidden: saved.timeline_hidden ?? [],
+        manual_ips: saved.manual_ips ?? [],
+      })
+      setBecCase({ account: saved.account, ip: saved.ip, timeWindow: saved.time_window, offline: saved.offline })
+    })
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
@@ -3904,6 +4103,22 @@ export default function HomePage({ user, onLogout, investigation, onInvestigatio
           onInvestigationChange(inv)
           onInvestigationDataChange(null)
         }}
+        becActive={!!becCase}
+        onSaveBec={async () => {
+          // The case auto-saves server-side; fetch the freshest copy and download it.
+          const { case: saved } = await getBecCase()
+          if (saved) exportBecCaseToFile(saved)
+        }}
+        onLoadBec={async (c) => {
+          await putBecCase(c)   // persist as the active case
+          setBecRestore({
+            selected: c.selected ?? [], checked: c.checked ?? [], notes: c.notes ?? {},
+            timeline_custom: c.timeline_custom ?? [], timeline_hidden: c.timeline_hidden ?? [],
+            manual_ips: c.manual_ips ?? [],
+          })
+          setBecCase({ account: c.account, ip: c.ip, timeWindow: c.time_window, offline: c.offline })
+          setBecLoadNonce(n => n + 1)   // force BecView to remount + re-seed
+        }}
       />
 
       {credsMissing && (
@@ -3923,7 +4138,17 @@ export default function HomePage({ user, onLogout, investigation, onInvestigatio
 
       <DegradationBanner />
 
-      {investigation
+      {becCase
+        ? <BecView
+            key={`${becCase.account}-${becLoadNonce}`}
+            account={becCase.account}
+            ip={becCase.ip}
+            timeWindow={becCase.timeWindow}
+            offline={becCase.offline}
+            restore={becRestore}
+            onReset={() => { setBecCase(null); setBecRestore(null); deleteBecCase() }}
+          />
+        : investigation
         ? <InvestigationShell
             inv={investigation}
             deviceInfo={deviceInfo}
@@ -3953,7 +4178,10 @@ export default function HomePage({ user, onLogout, investigation, onInvestigatio
             focalPidClickRef={focalPidClickRef}
             showHostTabRef={showHostTabRef}
           />
-        : <WelcomeScreen onStart={onInvestigationChange} />
+        : <WelcomeScreen
+            onStart={onInvestigationChange}
+            onStartBec={(account, ip, timeWindow, offline) => { setBecRestore(null); setBecCase({ account, ip, timeWindow, offline }) }}
+          />
       }
     </div>
   )

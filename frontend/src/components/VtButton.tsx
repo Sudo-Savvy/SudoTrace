@@ -18,6 +18,9 @@ interface Props {
   // 'sha1'). Stored on the IOC entry so the "hunt for this IOC" pivot
   // can query the right KQL field without re-deriving from length.
   hashType?: 'sha1' | 'sha256' | 'md5'
+  // Pure-lookup mode (e.g. the BEC module, which has no IOC-list panel):
+  // show the VirusTotal verdict + ISP/location only, no "add to IOC list".
+  lookupOnly?: boolean
 }
 
 const VERDICT_COLOR = {
@@ -32,7 +35,7 @@ function getVerdict(r: VtResult): 'malicious' | 'suspicious' | 'clean' {
   return 'clean'
 }
 
-export function VtButton({ ioc, iocType, hashType }: Props) {
+export function VtButton({ ioc, iocType, hashType, lookupOnly }: Props) {
   const isMsIp = (iocType === 'ip' && isMicrosoftIp(ioc)) ||
                  (iocType === 'domain' && isMicrosoftDomain(ioc))
   // Private RFC1918 / loopback / link-local IPs — never worth a VT lookup,
@@ -103,6 +106,7 @@ export function VtButton({ ioc, iocType, hashType }: Props) {
             <div style={{ color: '#F0B340', fontSize: 10, marginBottom: 10 }}>
               Internal/private IP range — VT lookup skipped.
             </div>
+            {!lookupOnly && (
             <button onClick={() => {
               if (added) return
               addIoc({ ioc, iocType, hashType, verdict: 'unknown', addedAt: Date.now() })
@@ -118,6 +122,7 @@ export function VtButton({ ioc, iocType, hashType }: Props) {
               }}>
               {added ? '✓ Added to IOC list' : '+ Add to IOC list'}
             </button>
+            )}
           </div>,
           document.body
         )}
@@ -165,6 +170,7 @@ export function VtButton({ ioc, iocType, hashType }: Props) {
             <div style={{ color: '#4aa3e8', fontSize: 10, marginBottom: 10 }}>
               Known Microsoft IP range — VT lookup skipped.
             </div>
+            {!lookupOnly && (
             <button onClick={() => {
               if (added) return
               addIoc({ ioc, iocType, hashType, verdict: 'unknown', addedAt: Date.now() })
@@ -180,6 +186,7 @@ export function VtButton({ ioc, iocType, hashType }: Props) {
               }}>
               {added ? '✓ Added to IOC list' : '+ Add to IOC list'}
             </button>
+            )}
           </div>,
           document.body
         )}
@@ -340,8 +347,9 @@ export function VtButton({ ioc, iocType, hashType }: Props) {
             <div style={{ marginBottom: 10, color: 'var(--text-muted)' }}>Not found in VirusTotal.</div>
           )}
 
-          {/* Add to IOC list — shown whenever we have a result (found or not) */}
-          {(result || error) && (
+          {/* Add to IOC list — shown whenever we have a result (found or not),
+              unless this is a pure-lookup placement (e.g. the BEC module). */}
+          {!lookupOnly && (result || error) && (
             <div style={{ marginTop: result?.found ? 10 : 0, paddingTop: result?.found ? 10 : 0, borderTop: result?.found ? '1px solid var(--border-soft)' : 'none' }}>
               <button onClick={handleAddIoc} disabled={added}
                 style={{

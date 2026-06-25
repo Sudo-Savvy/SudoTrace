@@ -211,6 +211,8 @@ def parse_time_window(focal_time: str | None, time_window: str) -> tuple[datetim
                 pass
         # Malformed custom range — fall back to ±1h default below.
 
+    if time_window == "last24h":
+        return now - timedelta(hours=24), now
     if time_window == "last7d":
         return now - timedelta(days=7), now
     if time_window == "last30d":

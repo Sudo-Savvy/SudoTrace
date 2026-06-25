@@ -106,6 +106,16 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON audit_log(timestamp);
             CREATE INDEX IF NOT EXISTS idx_audit_log_action    ON audit_log(action);
             CREATE INDEX IF NOT EXISTS idx_audit_log_user      ON audit_log(user_id);
+
+            -- Per-user BEC / account-compromise case auto-save. Mirrors
+            -- investigation_state: one active case per analyst, serialised by
+            -- the frontend (account, suspected IP, window, selected origins,
+            -- checklist ticks + notes) so a reload resumes where they left off.
+            CREATE TABLE IF NOT EXISTS bec_case_state (
+                user_id    INTEGER PRIMARY KEY REFERENCES users(id),
+                state_json TEXT    NOT NULL,
+                updated_at TEXT    NOT NULL DEFAULT (datetime('now'))
+            );
         """)
 
         existing = conn.execute(

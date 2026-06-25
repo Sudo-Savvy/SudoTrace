@@ -82,14 +82,21 @@ function MDEInstructions() {
             <li>Go to <strong>Certificates &amp; secrets</strong> → <strong>New client secret</strong> → Add. The table shows two columns — copy the <strong>Value</strong> column (long string), <em>not</em> the Secret ID (GUID). Value is shown once only — if you missed it, delete and recreate.</li>
             <li>Go to <strong>API permissions</strong> → <strong>Add a permission</strong> → <strong>Microsoft Graph</strong> → <strong>Application permissions</strong> and add:
               <ul style={si.subList}>
+                <li style={{ color: 'var(--text-muted)', listStyle: 'none', marginLeft: -14, fontWeight: 600 }}>Endpoint investigation</li>
                 <li><code style={si.code}>ThreatHunting.Read.All</code> — runs all KQL queries (process tree, telemetry, alerts table)</li>
                 <li><code style={si.code}>SecurityAlert.Read.All</code> — alert resolution for the Alerts sub-tab</li>
                 <li><code style={si.code}>SecurityIncident.Read.All</code> — Incidents sub-tab (Graph Security Incidents API)</li>
+                <li style={{ color: 'var(--text-muted)', listStyle: 'none', marginLeft: -14, fontWeight: 600, marginTop: 8 }}>Account-compromise (BEC) module</li>
+                <li><code style={si.code}>AuditLog.Read.All</code> — Entra sign-in logs (access-origin triage) + directory audit (persistence / policy changes)</li>
+                <li><code style={si.code}>Directory.Read.All</code> — resolve the account &amp; read its roles / state</li>
+                <li><code style={si.code}>AuditLogsQuery.Read.All</code> — Unified Audit Log (mailbox, recon, exfil, anti-forensics)</li>
+                <li><code style={si.code}>RoleManagement.Read.Directory</code> — privileged-role / PIM enrichment</li>
+                <li><code style={si.code}>IdentityRiskyUser.Read.All</code> &amp; <code style={si.code}>IdentityRiskEvent.Read.All</code> — Identity Protection risk (needs Entra ID P2)</li>
               </ul>
             </li>
             <li>Click <strong>Grant admin consent for [your tenant]</strong> — required, otherwise Test will return a permission error.</li>
           </ol>
-          <p style={si.note}>⚠ The tenant must have Microsoft Defender for Endpoint Plan 2 licences active.</p>
+          <p style={si.note}>⚠ Endpoint features need Microsoft Defender for Endpoint Plan 2. The BEC module needs Entra ID P1 (sign-in logs) at minimum; Identity Protection &amp; PIM enrichment need Entra ID P2; mailbox-read recon (<code style={si.code}>MailItemsAccessed</code>) needs E5 / Audit&nbsp;Premium.</p>
         </div>
       )}
     </div>

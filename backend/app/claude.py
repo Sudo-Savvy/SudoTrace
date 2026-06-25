@@ -858,3 +858,91 @@ async def run_analysis(
         "duration_ms":   duration_ms,
     }
     return findings
+
+
+# ── BEC client / stakeholder comms drafting (§7) ────────────────────────────
+_COMMS_SYSTEM = """You are a SOC analyst drafting an incident-notification message about a \
+business email compromise (BEC) / account-takeover. You write only from the \
+established facts you are given — never invent detail, never speculate beyond \
+them, never overstate certainty. The output is a DRAFT a human analyst will \
+review and edit before it is ever sent.
+
+Write clear, calm, plain English. No marketing tone, no alarmism. Structure the \
+message as: a one-line summary, what was observed, what has been done / is in \
+progress (containment), and what the recipient should do next. Keep it concise \
+(under ~300 words). Do not include a subject line unless it helps. Do not \
+fabricate names, times, ticket numbers, or contact details that are not in the \
+facts — leave a clearly-marked placeholder like [SOC contact] instead.
+
+Tailor tone to the audience:
+- client: external, non-technical; reassuring but honest; minimal jargon.
+- internal: fellow security/IT staff; technical specifics are fine.
+- affected_user: the compromised user; direct, instructional, blame-free.
+
+Return ONLY the message body text — no preamble, no JSON, no code fences."""
+
+_COMMS_AUDIENCES = {"client", "internal", "affected_user"}
+
+
+async def draft_comms(
+    anthropic_key: str,
+    audience: str,
+    facts: str,
+    investigation_id: str,
+    db: sqlite3.Connection,
+) -> dict:
+    """Draft a BEC notification message from established facts. Returns
+    {text, token_usage}. Logs token usage. Uses the Haiku default model."""
+    aud = audience if audience in _COMMS_AUDIENCES else "client"
+    client = anthropic.Anthropic(api_key=anthropic_key)
+    user_msg = f"Audience: {aud}\n\nEstablished facts:\n{facts}"
+
+    t0 = time.time()
+    try:
+        loop = asyncio.get_event_loop()
+
+        def _call():
+            return client.messages.create(
+                model=ANALYSIS_MODEL,
+                max_tokens=1500,
+                system=_COMMS_SYSTEM,
+                messages=[{"role": "user", "content": user_msg}],
+            )
+
+        msg = await loop.run_in_executor(None, _call)
+    except anthropic.APIConnectionError:
+        raise RuntimeError("AI_UNAVAILABLE")
+    except anthropic.APIStatusError as e:
+        raise RuntimeError(f"Anthropic API error {e.status_code}: {e.message}")
+
+    duration_ms = int((time.time() - t0) * 1000)
+    usage = msg.usage
+    input_tokens  = usage.input_tokens
+    output_tokens = usage.output_tokens
+    cached_tokens = getattr(usage, "cache_read_input_tokens", 0) or 0
+    cost_usd = _calc_cost(ANALYSIS_MODEL, input_tokens, output_tokens, cached_tokens)
+
+    log_token_usage(
+        db, investigation_id, "BEC_COMMS_DRAFTED", ANALYSIS_MODEL,
+        input_tokens, output_tokens, cached_tokens, cost_usd, duration_ms,
+    )
+
+    text = ""
+    for block in (msg.content or []):
+        t = getattr(block, "text", None)
+        if isinstance(t, str):
+            text = t
+            break
+    if not text:
+        raise RuntimeError("AI_UNAVAILABLE")
+
+    return {
+        "text": text.strip(),
+        "token_usage": {
+            "input_tokens":  input_tokens,
+            "output_tokens": output_tokens,
+            "cost_usd":      cost_usd,
+            "duration_ms":   duration_ms,
+            "model":         ANALYSIS_MODEL,
+        },
+    }

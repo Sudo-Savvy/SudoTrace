@@ -43,8 +43,13 @@ frontend/       React + TypeScript + Vite
 
 ## Key engineering rules
 
-- **API**: Microsoft Graph Security API only for all MDE queries.
-  Use `POST graph.microsoft.com/v1.0/security/runHuntingQuery` for all KQL.
+- **API**: Microsoft Graph only. Advanced hunting is the preferred surface —
+  `POST graph.microsoft.com/v1.0/security/runHuntingQuery` for all KQL (endpoint
+  workbench). The BEC / identity module additionally uses identity-plane Graph
+  endpoints that aren't hunting tables — `/auditLogs/signIns`,
+  `/auditLogs/directoryAudits`, `/identityProtection/*`, `/roleManagement/*`,
+  the unified audit log — via the same retried `graph_request` helper. No
+  non-Microsoft data sources.
 - **AI models**: claude-haiku-4-5-20251001 is the default for ALL Claude calls,
   analyst-facing and background. Cost-driven decision — a deliberate departure
   from the original scope doc, which specified Sonnet for analyst-facing work.

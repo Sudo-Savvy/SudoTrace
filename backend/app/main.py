@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.database import init_db, get_db
 from app.security import get_session
 from app.routers import auth, credentials, health
-from app.routers import investigate, vt, analyse, hunt, session_state, admin
+from app.routers import investigate, vt, analyse, hunt, session_state, admin, bec
 
 
 @asynccontextmanager
@@ -78,3 +78,4 @@ app.include_router(vt.router,         prefix="/api/vt")
 app.include_router(hunt.router,       prefix="/api/hunt")
 app.include_router(session_state.router, prefix="/api/session")
 app.include_router(admin.router,          prefix="/api/admin")
+app.include_router(bec.router,            prefix="/api/bec")

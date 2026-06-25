@@ -69,3 +69,36 @@ class HuntRequest(BaseModel):
     # analysts can't accidentally hit MDE's 30-day default lookback on an
     # unbounded query.
     timeframe: str = "24h"
+
+
+class BecSigninsRequest(BaseModel):
+    # UPN (user@domain) or Entra object id.
+    account: str
+    # 'last7d' | 'last30d' | 'custom:<startIso>..<endIso>'. Sign-in log
+    # retention is 30 days on Entra ID P1/P2, so last30d is the practical max.
+    time_window: str = "last7d"
+
+
+class BecScopeRequest(BaseModel):
+    # Account to scope, and the window of the selected origin(s). The window
+    # is normally 'custom:<startIso>..<endIso>' derived from the selected
+    # access-origin rows, but accepts the same presets as sign-ins.
+    account: str
+    time_window: str = "last7d"
+
+
+class BecEnrichRequest(BaseModel):
+    # Identity Protection risk + directory-role / PIM enrichment for the account.
+    account: str
+
+
+class BecWatchRequest(BaseModel):
+    # Containment-invariant re-check for the account (§5).
+    account: str
+
+
+class BecCommsRequest(BaseModel):
+    # Draft a client / stakeholder notification from the case facts (§7).
+    account: str
+    audience: str = "client"           # client | internal | affected_user
+    facts: str                         # analyst-assembled established-facts block
