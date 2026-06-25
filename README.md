@@ -2,7 +2,9 @@
 https://sudo-savvy.com/sudo-trace/
 ![sudoTrace Screenshot](docs/sudoTrace.png)
 
-**AI-powered SOC analyst workbench for Microsoft Defender for Endpoint.**
+**Free, self-hosted, AI-powered SOC analyst workbench for Microsoft Defender for Endpoint.**
+
+> It's **not** a SIEM or a monitoring tool — it's an investigation workbench you bring in when you already have something to investigate.
 
 >SudoTrace is a pure investigation and analysis tool. You submit a hostname or device ID and a process ID, and the tool loads your full process ancestry chain alongside telemetry from core MDE tables pulled in parallel via the Graph Security API.
 From there, the analyst is in control. You review the process tree, flag the processes that look suspicious or malicious, and confirm the IOCs you want examined. Those flagged items can then be sent to Claude, which analyses the scoped data as a virtual blue team analyst, working backwards from the focal process to find the true root cause, identifying the delivery vector with a confidence level, flagging lateral movement indicators, and producing structured findings that reference exact PIDs, timestamps, and command lines. Every finding is grounded in the actual telemetry you selected.
@@ -37,37 +39,19 @@ SudoTrace now extends beyond the endpoint into **identity and Business Email Com
 
 Give it a UPN and a time window and it separates the attacker's sessions from the legitimate user's, scopes everything they touched, and drives you through a phased incident-response runbook. It's **read-only** — it verifies and reports; it never executes containment. And it **degrades gracefully**: missing a permission, a licence tier, or Graph access entirely doesn't break it — it falls back to the offline checklist plus copy-paste Advanced Hunting queries.
 
-Open a case with a UPN — choose **Live (Graph API)** or fully **Offline (manual)**:
-![BEC open case](docs/bec-open-case.png)
-<!-- TODO: add docs/bec-open-case.png (the account-compromise open-case form) -->
+You open a case with a UPN and choose **Live (Graph API)** or fully **Offline (manual)** mode.
 
-**Access-origin triage** — sign-ins grouped per IP with anomaly flags (AiTM token reuse, impossible travel, hosting/datacentre ASN, legacy auth), one-click VirusTotal lookups, device-trust chips, and an Identity Protection / privilege strip (is this account a Global Admin? at risk?):
+**Access-origin triage** — sign-ins grouped per IP with anomaly flags (AiTM token reuse, impossible travel, hosting/datacentre ASN, legacy auth), one-click VirusTotal lookups, device-trust chips, and an Identity Protection / privilege strip (is this account a Global Admin? at risk?). Any origin expands to the exact individual sign-ins behind it — status, MFA method, app, session id, device:
 ![BEC access-origin triage](docs/bec-triage.png)
-<!-- TODO: add docs/bec-triage.png (triage table + enrichment strip + account-state alert) -->
 
-Expand any origin to the exact individual sign-ins behind it — status, MFA method, app, session id, device:
-![BEC sign-in detail](docs/bec-signin-detail.png)
-<!-- TODO: add docs/bec-signin-detail.png (an expanded access-origin row) -->
-
-**What the attacker did, in order** — tick the attacker's origins and scope persistence, mailbox manipulation, recon (which emails/files they read), exfiltration, anti-forensics and the outbound fraud mail. Results are deduplicated and rewritten in plain English, each with the source IP/device:
+**What the attacker did, in order** — tick the attacker's origins and scope persistence, mailbox manipulation, recon (which emails/files they read), exfiltration, anti-forensics and the outbound fraud mail. Results are deduplicated and rewritten in plain English, each with the source IP/device. Tick the events that matter to fold them onto a chronological timeline you can edit and export to CSV:
 ![BEC attacker activity](docs/bec-attacker-activity.png)
-<!-- TODO: add docs/bec-attacker-activity.png (the populated "what the attacker did" account) -->
 
-**Timeline** — sign-ins, risk detections and the attacker actions you select, on one chronological rail; filterable, editable, and exportable to CSV:
-![BEC timeline](docs/bec-timeline.png)
-<!-- TODO: add docs/bec-timeline.png (the merged timeline) -->
-
-**Containment watcher** — verifies the two invariants that actually matter: sessions revoked *and holding*, and the account disabled (because disabling an account doesn't kill an already-stolen token — only revoking sessions does):
+**Containment watcher** — verifies the two invariants that actually matter: sessions revoked *and holding*, and the account disabled (because disabling an account doesn't kill an already-stolen token — only revoking sessions does). Because it re-checks the live account state on every run, it also catches an account that's been silently re-enabled — e.g. by on-prem AD sync in a hybrid tenant. It all sits inside a phased IR checklist (triage → isolate/contain → identify → scope → eradicate → restore → harden → notify → document) that auto-ticks as findings come in:
 ![BEC containment](docs/bec-containment.png)
-<!-- TODO: add docs/bec-containment.png (the containment-invariants view) -->
-
-**Phased IR checklist** — triage → isolate/contain → identify → scope → eradicate → restore → harden → notify → document, auto-ticked as findings come in:
-![BEC checklist](docs/bec-checklist.png)
-<!-- TODO: add docs/bec-checklist.png (the investigation checklist sidebar) -->
 
 **No Graph access? No problem.** Offline mode skips Graph entirely and generates copy-paste **Advanced Hunting (KQL)** queries pre-filled with the account and window — add suspicious IPs as you find them and every query narrows to them:
 ![BEC offline manual hunts](docs/bec-offline-hunts.png)
-<!-- TODO: add docs/bec-offline-hunts.png (the offline / manual-hunt queries) -->
 
 Each case auto-saves and can be exported to a portable JSON file to archive or hand to another analyst.
 
