@@ -39,3 +39,6 @@ Thumbs.db
 # Scope doc — kept locally only, never published.
 *.docx
 SudoTrace-Full-Scope-*.txt
+
+# Claude Code instructions — local dev guidance, not for the public repo.
+CLAUDE.md
