@@ -222,7 +222,10 @@ export default function BecView({ account, ip, timeWindow, offline, onReset, res
   const addManualIp = (ip: string) => setManualIps(prev => prev.includes(ip) ? prev : [...prev, ip])
   const removeManualIp = (ip: string) => setManualIps(prev => prev.filter(i => i !== ip))
 
-  function addTimelineItem(c: TimelineCustom) { setTimelineCustom(prev => [...prev, c]) }
+  // Add a timeline item, idempotent by id (re-adding the same finding is a no-op).
+  function addTimelineItem(c: TimelineCustom) {
+    setTimelineCustom(prev => prev.some(x => x.id === c.id) ? prev : [...prev, c])
+  }
   function removeTimelineItem(id: string) {
     if (id.startsWith('custom-')) setTimelineCustom(prev => prev.filter(c => c.id !== id))
     else setTimelineHidden(prev => new Set(prev).add(id))
@@ -449,15 +452,18 @@ export default function BecView({ account, ip, timeWindow, offline, onReset, res
         if (f.antiforensic?.available && f.antiforensic.events.length) tick('p3-antiforensic')
         if (f.objective?.available && f.objective.events.length) tick('p3-objective')
 
-        // Still-running UAL categories → resume automatically (up to 3×).
+        // Still-running UAL categories → resume automatically. A cold audit-log
+        // query (e.g. a freshly re-scoped window) can take a couple of minutes
+        // to materialise, so keep resuming at a steady cadence rather than
+        // giving up after a few tries.
         const stillRunning = ['mailbox', 'exfil', 'recon', 'antiforensic'].some(k => {
           const c = f[k]
           return c && !c.available && (c.reason || '').toLowerCase().includes('still running')
         })
-        if (stillRunning && scopeRetries.current < 3) {
+        if (stillRunning && scopeRetries.current < 20) {
           scopeRetries.current += 1
           willRetry = true
-          setTimeout(() => runScope(win, undefined, myGen), 6000)
+          setTimeout(() => runScope(win, undefined, myGen), 8000)
         } else {
           scopeRetries.current = 0
         }
@@ -576,7 +582,7 @@ export default function BecView({ account, ip, timeWindow, offline, onReset, res
           ) : view === 'comms' ? (
             <CommsView comms={comms} drafting={drafting} onRun={runComms} />
           ) : view === 'findings' ? (
-            <FindingsPanel scope={scope} scoping={scoping} scopeWin={scopeWin} onRescope={rescope} />
+            <FindingsPanel scope={scope} scoping={scoping} scopeWin={scopeWin} onRescope={rescope} onAddTimelineItem={addTimelineItem} />
           ) : showManual ? (
             <div style={{ flex: 1, overflow: 'auto', padding: '14px 16px' }}>
               <ManualHunts account={account} timeWindow={win} ips={manualIps} onAddIp={addManualIp} onRemoveIp={removeManualIp} />
@@ -869,17 +875,67 @@ interface TimelineEvent {
   custom?: boolean
 }
 
-// Analyst-authored custom timeline entry (persisted in the case).
+// Analyst-curated timeline entry (persisted in the case): a free-text note, or
+// an attacker-activity finding the analyst explicitly added from the findings
+// tab. `kind`/`color` carry the finding's category styling when present.
 export interface TimelineCustom {
   id: string
   ts: string     // ISO 8601
   label: string
   sub: string
+  kind?: string
+  color?: string
 }
 
+// Reusable "add a custom timeline item" form — used on both the Timeline tab
+// and the Attacker-activity tab so the analyst can annotate from either.
+function AddTimelineItemForm({ onAdd, onClose }: { onAdd: (c: TimelineCustom) => void; onClose: () => void }) {
+  const [when, setWhen] = useState('')       // ISO 8601, chosen via RangePicker
+  const [pickWhen, setPickWhen] = useState(false)
+  const [label, setLabel] = useState('')
+  const [sub, setSub] = useState('')
+  const inputStyle: React.CSSProperties = {
+    background: 'var(--bg-app)', border: '1px solid var(--border)', borderRadius: 3,
+    color: 'var(--text)', fontFamily: 'var(--font-mono)', fontSize: 11, padding: '4px 8px', outline: 'none',
+  }
+  function submit() {
+    if (!label.trim()) return
+    onAdd({ id: `custom-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, ts: when || new Date().toISOString(), label: label.trim(), sub: sub.trim() })
+    onClose()
+  }
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 14, padding: '10px 12px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-panel)' }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <button type="button" onClick={() => setPickWhen(true)} style={{ ...inputStyle, cursor: 'pointer', color: when ? 'var(--text)' : 'var(--text-muted)' }} title="Pick the date & time on the calendar">
+          {when ? fmtDateTime(when) : 'pick date & time (now)'}
+        </button>
+        <input autoFocus placeholder="what happened (e.g. Notified user by phone)" value={label} onChange={e => setLabel(e.target.value)} style={{ ...inputStyle, flex: 1, minWidth: 220 }} onKeyDown={e => { if (e.key === 'Enter') submit() }} />
+      </div>
+      <input placeholder="detail (optional)" value={sub} onChange={e => setSub(e.target.value)} style={inputStyle} onKeyDown={e => { if (e.key === 'Enter') submit() }} />
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
+        <button onClick={onClose} style={{ background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-muted)', cursor: 'pointer', fontFamily: 'var(--font-mono)', fontSize: 10.5, padding: '4px 12px', borderRadius: 3 }}>cancel</button>
+        <button onClick={submit} style={{ background: 'var(--accent)', color: '#fff', border: 'none', cursor: 'pointer', fontFamily: 'var(--font-mono)', fontSize: 10.5, fontWeight: 600, padding: '4px 14px', borderRadius: 3 }}>add to timeline</button>
+      </div>
+      {pickWhen && createPortal(
+        <>
+          <div onClick={() => setPickWhen(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 10000 }} />
+          <div style={{ position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', zIndex: 10001 }}>
+            <RangePicker mode="single" initialStart={when || undefined}
+              onApply={(iso) => { setWhen(iso); setPickWhen(false) }}
+              onCancel={() => setPickWhen(false)} />
+          </div>
+        </>,
+        document.body,
+      )}
+    </div>
+  )
+}
+
+// Auto timeline events = sign-ins + Identity Protection risk detections (origin-
+// level context). Attacker-activity FINDINGS are NOT auto-added — the analyst
+// curates which ones go on the timeline from the Attacker-activity tab.
 function buildBecTimeline(
   origins: BecOrigin[],
-  scope: BecScopeResponse | null,
   enrich: BecEnrichResponse | null,
 ): TimelineEvent[] {
   const ev: TimelineEvent[] = []
@@ -914,32 +970,31 @@ function buildBecTimeline(
     })
   }
 
-  const catColor: Record<string, string> = {
-    persistence: '#FF5E5B', defense: '#FF5E5B', recon: '#F0B340', mailbox: '#FF5E5B',
-    exfil: '#F0B340', antiforensic: '#FF5E5B', objective: '#F0B340',
-  }
-  for (const cat of Object.keys(catColor)) {
-    const c = scope?.ok ? scope.findings[cat] : undefined
-    if (!c?.available) continue
-    for (const e of c.events) {
-      ev.push({
-        id: `${cat}:${e.id || e.timestamp + e.activity}`,
-        ts: e.timestamp,
-        kind: cat,
-        color: catColor[cat],
-        label: `${CATEGORY_TITLE[cat] || cat} · ${e.activity}`,
-        ip: e.initiated_by_ip || undefined,
-        sub: [
-          e.detail,
-          e.target && `target ${e.target}`,
-          e.initiated_by_ip && `from ${e.initiated_by_ip}`,
-          e.result,
-        ].filter(Boolean).join(' · '),
-      })
-    }
-  }
-
   return ev
+}
+
+// Category colours, shared by the findings chips and the timeline entries the
+// analyst adds from them.
+const FINDING_CAT_COLOR: Record<string, string> = {
+  persistence: '#FF5E5B', defense: '#FF5E5B', recon: '#F0B340', mailbox: '#FF5E5B',
+  exfil: '#F0B340', antiforensic: '#FF5E5B', objective: '#F0B340',
+}
+
+// Build a persisted timeline entry from a selected attacker-activity finding.
+function findingToTimelineItem(cat: string, e: BecPersistenceEvent): TimelineCustom {
+  return {
+    id: `find:${cat}:${e.id || e.timestamp + e.activity}`,
+    ts: e.timestamp,
+    label: `${CATEGORY_TITLE[cat] || cat} · ${e.activity}`,
+    sub: [
+      e.detail,
+      e.target && `target ${e.target}`,
+      e.initiated_by_ip && `from ${e.initiated_by_ip}`,
+      e.result,
+    ].filter(Boolean).join(' · '),
+    kind: cat,
+    color: FINDING_CAT_COLOR[cat] || 'var(--accent)',
+  }
 }
 
 function BecTimeline({ origins, scope, enrich, loading, window, selected, account, custom, hidden, onAdd, onRemove, onRestore }: {
@@ -956,7 +1011,7 @@ function BecTimeline({ origins, scope, enrich, loading, window, selected, accoun
   onRemove: (id: string) => void          // hide an auto event / delete a custom one
   onRestore: (id: string) => void         // un-hide a removed auto event
 }) {
-  const auto = useMemo(() => buildBecTimeline(origins, scope, enrich), [origins, scope, enrich])
+  const auto = useMemo(() => buildBecTimeline(origins, enrich), [origins, enrich])
 
   // Bound auto events (esp. all-time Identity Protection detections) to the
   // selected lookback so a 24h case doesn't drag in months of old risk events.
@@ -976,7 +1031,7 @@ function BecTimeline({ origins, scope, enrich, loading, window, selected, accoun
   const excludedCount = filterByIp ? auto.filter(e => !hidden.has(e.id) && inWindow(e.ts) && !fromAttacker(e)).length : 0
 
   const customEvents: TimelineEvent[] = custom.map(c => ({
-    id: c.id, ts: c.ts, kind: 'custom', color: 'var(--accent)', label: c.label, sub: c.sub, custom: true,
+    id: c.id, ts: c.ts, kind: c.kind || 'custom', color: c.color || 'var(--accent)', label: c.label, sub: c.sub, custom: true,
   }))
 
   // Custom (analyst-added) items are always shown; auto events respect the
@@ -987,18 +1042,8 @@ function BecTimeline({ origins, scope, enrich, loading, window, selected, accoun
 
   const removedAuto = auto.filter(e => hidden.has(e.id))
 
-  // Add-item form state.
+  // Add-item form toggle (the form itself is the shared AddTimelineItemForm).
   const [showAdd, setShowAdd] = useState(false)
-  const [when, setWhen] = useState('')      // ISO 8601, chosen via RangePicker
-  const [pickWhen, setPickWhen] = useState(false)
-  const [label, setLabel] = useState('')
-  const [sub, setSub] = useState('')
-
-  function submitAdd() {
-    if (!label.trim()) return
-    onAdd({ id: `custom-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, ts: when || new Date().toISOString(), label: label.trim(), sub: sub.trim() })
-    setLabel(''); setSub(''); setWhen(''); setShowAdd(false)
-  }
 
   function exportCsv() {
     const esc = (v: string) => `"${(v || '').replace(/"/g, '""')}"`
@@ -1017,10 +1062,6 @@ function BecTimeline({ origins, scope, enrich, loading, window, selected, accoun
     setTimeout(() => URL.revokeObjectURL(url), 1000)
   }
 
-  const inputStyle: React.CSSProperties = {
-    background: 'var(--bg-app)', border: '1px solid var(--border)', borderRadius: 3,
-    color: 'var(--text)', fontFamily: 'var(--font-mono)', fontSize: 11, padding: '4px 8px', outline: 'none',
-  }
   const btnStyle = (on: boolean): React.CSSProperties => ({
     background: on ? 'rgba(168,85,247,0.15)' : 'transparent',
     border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`,
@@ -1053,33 +1094,7 @@ function BecTimeline({ origins, scope, enrich, loading, window, selected, accoun
         </div>
       )}
 
-      {showAdd && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 14, padding: '10px 12px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-panel)' }}>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <button type="button" onClick={() => setPickWhen(true)} style={{ ...inputStyle, cursor: 'pointer', color: when ? 'var(--text)' : 'var(--text-muted)' }} title="Pick the date & time on the calendar">
-              {when ? fmtDateTime(when) : 'pick date & time (now)'}
-            </button>
-            <input placeholder="what happened (e.g. Notified user by phone)" value={label} onChange={e => setLabel(e.target.value)} style={{ ...inputStyle, flex: 1, minWidth: 220 }} onKeyDown={e => { if (e.key === 'Enter') submitAdd() }} />
-          </div>
-          <input placeholder="detail (optional)" value={sub} onChange={e => setSub(e.target.value)} style={inputStyle} onKeyDown={e => { if (e.key === 'Enter') submitAdd() }} />
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
-            <button onClick={() => setShowAdd(false)} style={{ background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-muted)', cursor: 'pointer', fontFamily: 'var(--font-mono)', fontSize: 10.5, padding: '4px 12px', borderRadius: 3 }}>cancel</button>
-            <button onClick={submitAdd} style={{ background: 'var(--accent)', color: '#fff', border: 'none', cursor: 'pointer', fontFamily: 'var(--font-mono)', fontSize: 10.5, fontWeight: 600, padding: '4px 14px', borderRadius: 3 }}>add to timeline</button>
-          </div>
-        </div>
-      )}
-
-      {pickWhen && createPortal(
-        <>
-          <div onClick={() => setPickWhen(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 10000 }} />
-          <div style={{ position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', zIndex: 10001 }}>
-            <RangePicker mode="single" initialStart={when || undefined}
-              onApply={(iso) => { setWhen(iso); setPickWhen(false) }}
-              onCancel={() => setPickWhen(false)} />
-          </div>
-        </>,
-        document.body,
-      )}
+      {showAdd && <AddTimelineItemForm onAdd={onAdd} onClose={() => setShowAdd(false)} />}
 
       {loading && visible.length === 0 ? (
         <Centered>Building timeline…</Centered>
@@ -1103,7 +1118,7 @@ function BecTimeline({ origins, scope, enrich, loading, window, selected, accoun
               <div style={{ flex: 1, minWidth: 0, paddingBottom: 14, display: 'flex', gap: 8 }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ color: 'var(--text)', fontSize: 11.5 }}>
-                    {e.custom && <span style={{ color: 'var(--accent)', fontSize: 8.5, fontWeight: 700, border: '1px solid var(--accent)', borderRadius: 2, padding: '0 4px', marginRight: 6 }}>NOTE</span>}
+                    {e.custom && e.kind === 'custom' && <span style={{ color: 'var(--accent)', fontSize: 8.5, fontWeight: 700, border: '1px solid var(--accent)', borderRadius: 2, padding: '0 4px', marginRight: 6 }}>NOTE</span>}
                     {e.label}
                   </div>
                   {e.sub && <div style={{ color: 'var(--text-muted)', fontSize: 10, marginTop: 1, wordBreak: 'break-word' }}>{e.sub}</div>}
@@ -1648,9 +1663,10 @@ function ScopingBanner() {
 
 // Attacker-activity findings, by category. Persistence is live; the others
 // render a "needs permission" card so the analyst sees the upgrade path.
-function FindingsPanel({ scope, scoping, scopeWin, onRescope }: {
+function FindingsPanel({ scope, scoping, scopeWin, onRescope, onAddTimelineItem }: {
   scope: BecScopeResponse | null; scoping: boolean
   scopeWin: string | null; onRescope: (win: string) => void
+  onAddTimelineItem: (c: TimelineCustom) => void
 }) {
   // Categories the analyst has toggled off (hidden from the chronological list
   // via the summary chips). Declared before any early return per hooks rules.
@@ -1658,6 +1674,12 @@ function FindingsPanel({ scope, scoping, scopeWin, onRescope }: {
   const toggleCat = (cat: string) =>
     setHiddenCats(prev => { const n = new Set(prev); n.has(cat) ? n.delete(cat) : n.add(cat); return n })
   const [winPickerOpen, setWinPickerOpen] = useState(false)
+  const [showAddTl, setShowAddTl] = useState(false)
+  // Per-row selection of attacker-activity events to add to the timeline.
+  const [picked, setPicked] = useState<Set<string>>(new Set())
+  const evKey = (cat: string, e: BecPersistenceEvent) => `${cat}:${e.id || e.timestamp + e.activity}`
+  const togglePick = (k: string) =>
+    setPicked(prev => { const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n })
 
   // Only block on the very first scope; once we have a (partial) result keep it
   // visible while the UAL categories auto-retry in the background.
@@ -1697,6 +1719,15 @@ function FindingsPanel({ scope, scoping, scopeWin, onRescope }: {
 
   const gated = cats.filter(c => !scope.findings[c].available)
 
+  function addPickedToTimeline() {
+    for (const { cat, e } of merged) {
+      if (picked.has(evKey(cat, e))) onAddTimelineItem(findingToTimelineItem(cat, e))
+    }
+    setPicked(new Set())
+  }
+  const allPickableKeys = visibleMerged.map(({ cat, e }) => evKey(cat, e))
+  const allPicked = allPickableKeys.length > 0 && allPickableKeys.every(k => picked.has(k))
+
   return (
     <div style={{ flex: 1, overflow: 'auto', padding: '12px 16px', fontFamily: 'var(--font-mono)', display: 'flex', flexDirection: 'column', gap: 12 }}>
       {/* Big "still running" indicator while the async UAL query auto-retries. */}
@@ -1720,7 +1751,22 @@ function FindingsPanel({ scope, scoping, scopeWin, onRescope }: {
             <option value="custom">{scopeWin && scopeWin.startsWith('custom:') ? formatCustomWindow(scopeWin) : 'Custom range…'}</option>
           </select>
         </span>
+        {picked.size > 0 && (
+          <button onClick={addPickedToTimeline} title="Add the ticked attacker-activity events to the case timeline"
+            style={{ background: 'var(--accent)', border: 'none', color: '#fff', cursor: 'pointer', fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 700, padding: '2px 10px', borderRadius: 3 }}>
+            + add {picked.size} to timeline
+          </button>
+        )}
+        <button onClick={() => setShowAddTl(s => !s)} title="Add a free-text note to the case timeline"
+          style={{
+            background: showAddTl ? 'rgba(168,85,247,0.15)' : 'transparent',
+            border: `1px solid ${showAddTl ? 'var(--accent)' : 'var(--border)'}`,
+            color: showAddTl ? 'var(--accent)' : 'var(--text-muted)', cursor: 'pointer',
+            fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600, padding: '2px 9px', borderRadius: 3,
+          }}>+ add note</button>
       </div>
+
+      {showAddTl && <AddTimelineItemForm onAdd={c => { onAddTimelineItem(c); setShowAddTl(false) }} onClose={() => setShowAddTl(false)} />}
 
       {winPickerOpen && createPortal(
         <>
@@ -1785,24 +1831,34 @@ function FindingsPanel({ scope, scoping, scopeWin, onRescope }: {
         </div>
       ) : (
         <div style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-panel)', padding: '4px 12px' }}>
-          <div style={{ color: 'var(--text-muted)', fontSize: 9.5, padding: '6px 0 2px', letterSpacing: 0.3, textTransform: 'uppercase' }}>
-            what the attacker did · in order
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-muted)', fontSize: 9.5, padding: '6px 0 2px', letterSpacing: 0.3, textTransform: 'uppercase' }}>
+            <input type="checkbox" checked={allPicked}
+              onChange={() => setPicked(allPicked ? new Set() : new Set(allPickableKeys))}
+              title="Select all / none" style={{ cursor: 'pointer' }} />
+            what the attacker did · in order — tick events to add to the timeline
             {hiddenCats.size > 0 && <span style={{ textTransform: 'none', letterSpacing: 0, marginLeft: 8 }}>({hiddenCats.size} categor{hiddenCats.size === 1 ? 'y' : 'ies'} hidden)</span>}
           </div>
-          {visibleMerged.map(({ e }, i) => <PersistRow key={e.id || i} e={e} last={i === visibleMerged.length - 1} />)}
+          {visibleMerged.map(({ cat, e }, i) => (
+            <PersistRow key={e.id || i} e={e} last={i === visibleMerged.length - 1}
+              picked={picked.has(evKey(cat, e))} onPick={() => togglePick(evKey(cat, e))} />
+          ))}
         </div>
       )}
     </div>
   )
 }
 
-function PersistRow({ e, last }: { e: BecPersistenceEvent; last?: boolean }) {
+function PersistRow({ e, last, picked, onPick }: { e: BecPersistenceEvent; last?: boolean; picked?: boolean; onPick?: () => void }) {
   const meta = PERSIST_CAT[e.category] ?? { label: e.category, color: 'var(--text-muted)' }
   const explain = ACTION_EXPLAIN[e.category]
   const extraIps = (e.ip_count ?? 0) > 1 ? ` (+${(e.ip_count ?? 1) - 1} more IP${e.ip_count === 2 ? '' : 's'})` : ''
   const seen = (e.event_count ?? 0) > 1 ? ` · seen ${e.event_count}×` : ''
   return (
     <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '8px 0', borderBottom: last ? 'none' : '1px solid var(--border-soft)' }}>
+      {onPick && (
+        <input type="checkbox" checked={!!picked} onChange={onPick}
+          title="Add this event to the timeline" style={{ cursor: 'pointer', marginTop: 3, flexShrink: 0 }} />
+      )}
       {/* Time leads so the list reads chronologically top-to-bottom. */}
       <div style={{ width: 118, flexShrink: 0, textAlign: 'right', color: 'var(--text-muted)', fontSize: 9.5, paddingTop: 2 }}>
         {fmtDateTime(e.timestamp)}

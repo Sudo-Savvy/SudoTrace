@@ -1,6 +1,6 @@
 # SudoTrace
 https://sudo-savvy.com/sudo-trace/
-![sudoTrace Screenshot](sudoTrace.png)
+![sudoTrace Screenshot](docs/sudoTrace.png)
 
 **AI-powered SOC analyst workbench for Microsoft Defender for Endpoint.**
 
@@ -8,7 +8,7 @@ https://sudo-savvy.com/sudo-trace/
 From there, the analyst is in control. You review the process tree, flag the processes that look suspicious or malicious, and confirm the IOCs you want examined. Those flagged items can then be sent to Claude, which analyses the scoped data as a virtual blue team analyst, working backwards from the focal process to find the true root cause, identifying the delivery vector with a confidence level, flagging lateral movement indicators, and producing structured findings that reference exact PIDs, timestamps, and command lines. Every finding is grounded in the actual telemetry you selected.
 
 
-![Screenshot 1](Screenshot1.png)
+![Screenshot 1](docs/Screenshot1.png)
 - Visual process tree with colour-coded flagging — suspicious (amber), malicious (red), benign (green)
 - Core telemetry tables loaded in parallel via the Microsoft Graph Security API
 - Claude analysis: root cause, delivery vector, attack narrative
@@ -18,17 +18,60 @@ From there, the analyst is in control. You review the process tree, flag the pro
 
 
 Pivot to hunting from your curated IOC list:
-![Screenshot 2](Screenshot2.png)
+![Screenshot 2](docs/Screenshot2.png)
 
 Flag events as benign, suspicious, or malicious to build your timeline:
-![Screenshot 3](Screenshot3.png)
+![Screenshot 3](docs/Screenshot3.png)
 
 Timeline that can be modified and exported:
-![Screenshot 4](Screenshot4.png)
+![Screenshot 4](docs/Screenshot4.png)
 
 The AI will analyse the flagged entities and summarize if the activity is benign or malicious with a confidence level:
-![Screenshot 5](Screenshot5.png)
+![Screenshot 5](docs/Screenshot5.png)
 
+---
+
+## Account-compromise / BEC investigation
+
+SudoTrace now extends beyond the endpoint into **identity and Business Email Compromise (BEC) investigation**. Where the endpoint workbench answers *"what did this process do on this host?"*, the account-compromise module answers *"what did the attacker do with this stolen account?"* — reconstructing the whole takeover from Entra sign-in logs, the Unified Audit Log and Identity Protection into a single, readable account-of-events.
+
+Give it a UPN and a time window and it separates the attacker's sessions from the legitimate user's, scopes everything they touched, and drives you through a phased incident-response runbook. It's **read-only** — it verifies and reports; it never executes containment. And it **degrades gracefully**: missing a permission, a licence tier, or Graph access entirely doesn't break it — it falls back to the offline checklist plus copy-paste Advanced Hunting queries.
+
+Open a case with a UPN — choose **Live (Graph API)** or fully **Offline (manual)**:
+![BEC open case](docs/bec-open-case.png)
+<!-- TODO: add docs/bec-open-case.png (the account-compromise open-case form) -->
+
+**Access-origin triage** — sign-ins grouped per IP with anomaly flags (AiTM token reuse, impossible travel, hosting/datacentre ASN, legacy auth), one-click VirusTotal lookups, device-trust chips, and an Identity Protection / privilege strip (is this account a Global Admin? at risk?):
+![BEC access-origin triage](docs/bec-triage.png)
+<!-- TODO: add docs/bec-triage.png (triage table + enrichment strip + account-state alert) -->
+
+Expand any origin to the exact individual sign-ins behind it — status, MFA method, app, session id, device:
+![BEC sign-in detail](docs/bec-signin-detail.png)
+<!-- TODO: add docs/bec-signin-detail.png (an expanded access-origin row) -->
+
+**What the attacker did, in order** — tick the attacker's origins and scope persistence, mailbox manipulation, recon (which emails/files they read), exfiltration, anti-forensics and the outbound fraud mail. Results are deduplicated and rewritten in plain English, each with the source IP/device:
+![BEC attacker activity](docs/bec-attacker-activity.png)
+<!-- TODO: add docs/bec-attacker-activity.png (the populated "what the attacker did" account) -->
+
+**Timeline** — sign-ins, risk detections and the attacker actions you select, on one chronological rail; filterable, editable, and exportable to CSV:
+![BEC timeline](docs/bec-timeline.png)
+<!-- TODO: add docs/bec-timeline.png (the merged timeline) -->
+
+**Containment watcher** — verifies the two invariants that actually matter: sessions revoked *and holding*, and the account disabled (because disabling an account doesn't kill an already-stolen token — only revoking sessions does):
+![BEC containment](docs/bec-containment.png)
+<!-- TODO: add docs/bec-containment.png (the containment-invariants view) -->
+
+**Phased IR checklist** — triage → isolate/contain → identify → scope → eradicate → restore → harden → notify → document, auto-ticked as findings come in:
+![BEC checklist](docs/bec-checklist.png)
+<!-- TODO: add docs/bec-checklist.png (the investigation checklist sidebar) -->
+
+**No Graph access? No problem.** Offline mode skips Graph entirely and generates copy-paste **Advanced Hunting (KQL)** queries pre-filled with the account and window — add suspicious IPs as you find them and every query narrows to them:
+![BEC offline manual hunts](docs/bec-offline-hunts.png)
+<!-- TODO: add docs/bec-offline-hunts.png (the offline / manual-hunt queries) -->
+
+Each case auto-saves and can be exported to a portable JSON file to archive or hand to another analyst.
+
+---
 
 Self-hosted, runs in two Docker containers, talks to your tenant through the Microsoft Graph Security API only.
 
@@ -52,7 +95,12 @@ Visit **https://localhost** and accept the self-signed certificate warning.
 Configuration is then done in the UI (Settings):
 
 - **Microsoft Defender for Endpoint** — paste your Azure AD app registration's tenant ID, client ID,
-  client secret. App needs `ThreatHunting.Read.All` and `SecurityIncident.Read.All` with admin consent.
+  client secret. The endpoint workbench needs `ThreatHunting.Read.All`, `SecurityAlert.Read.All` and
+  `SecurityIncident.Read.All` with admin consent.
+  - **Account-compromise / BEC module** additionally needs `AuditLog.Read.All`, `Directory.Read.All`,
+    `AuditLogsQuery.Read.All` and `RoleManagement.Read.Directory`; the Identity Protection enrichment
+    needs `IdentityRiskyUser.Read.All` + `IdentityRiskEvent.Read.All` (and Entra ID P2). All BEC features
+    degrade gracefully if a permission or licence tier is missing.
 - **Claude AI (Anthropic)** — paste an API key from `console.anthropic.com`. There's an always-visible
   disclaimer covering what data leaves your environment.
 - **VirusTotal** — optional, free key from `virustotal.com` for hash / IP lookups.
@@ -75,8 +123,10 @@ All credentials are encrypted at rest in the SQLite DB inside the Docker volume.
 
 These are baked into the design and worth knowing before you fork:
 
-- **MDE access** via Microsoft Graph Security API only — `POST graph.microsoft.com/v1.0/security/runHuntingQuery`
-  for all KQL.
+- **Microsoft Graph only.** Endpoint hunting goes through `POST graph.microsoft.com/v1.0/security/runHuntingQuery`
+  for all KQL. The account-compromise module additionally uses identity-plane Graph endpoints
+  (`/auditLogs/signIns`, `/auditLogs/directoryAudits`, the audit-log query API, `/identityProtection/*`,
+  `/roleManagement/*`) through the same retried request helper. No non-Microsoft data sources.
 - **Ports** bound to `127.0.0.1` only — never `0.0.0.0`. Put a reverse proxy in front for remote access.
 - **Credentials** entered through the UI only — no `.env` files, no config files on disk.
 - **Errors** show analyst-friendly text; full detail (stack traces, raw Graph responses) stays in the
